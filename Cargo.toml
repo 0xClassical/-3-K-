@@ -1,0 +1,44 @@
+[package]
+name = "meme-quant"
+version = "3.4.2-oss.1"
+edition = "2021"
+description = "BSC 多 Launchpad meme 量化监测：统一建币入口 -> A/B/C 状态机 -> GMGN 调度"
+license = "MIT"
+readme = "README.md"
+publish = false
+
+[[bin]]
+name = "meme-quant"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+axum = { version = "0.7", features = ["json", "ws"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+tiny-keccak = { version = "2", features = ["keccak"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+
+# 默认构建不含广播能力；实盘需要另行明确授权、配置、解锁及本机启用。
+k256 = { version = "0.13", features = ["ecdsa"] }
+rlp = "0.5"
+aes-gcm = { version = "0.10", features = ["aes"] }
+sha2 = "0.10"
+hex = "0.4"
+argon2 = { version = "0.5", features = ["zeroize"] }
+aes = { version = "0.8", features = ["zeroize"] }
+zeroize = "1.9"
+
+[features]
+default = []
+live-trading = []
+
+[profile.release]
+opt-level = 2
+codegen-units = 4

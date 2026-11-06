@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Meme Quant 候补监控</title>
+  <style>
+    :root{color-scheme:dark;--bg:#090c12;--card:#121722;--line:#293142;--text:#edf1f7;--dim:#8e9aaf;--gold:#f0b90b;--green:#32c48d;--red:#ff6670}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
+    header{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;padding:16px 24px;background:#0c1018e8;border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}
+    h1{font-size:18px;margin:0}.status{color:var(--dim)}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);margin-right:7px}.dot.ok{background:var(--green)}
+    main{max-width:1280px;margin:auto;padding:22px}.section{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:20px;overflow:hidden}
+    .sectionHead{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}h2{font-size:15px;margin:0}.tools{display:flex;gap:8px}
+    button{border:1px solid var(--line);border-radius:7px;background:#1a2130;color:var(--text);padding:7px 11px;cursor:pointer}button.active{border-color:var(--gold);color:var(--gold)}button.remove{font-size:20px;line-height:1;padding:4px 9px;color:var(--red);background:transparent}
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px 16px;border-bottom:1px solid #202737}th{font-size:12px;color:var(--dim);font-weight:600}tbody tr:last-child td{border-bottom:0}.ca{font-family:ui-monospace,Consolas,monospace;color:#a9b6cc}.money{color:var(--green);font-variant-numeric:tabular-nums}.empty{text-align:center;color:var(--dim);padding:30px}.pill{font-size:11px;padding:2px 7px;border:1px solid #44506a;border-radius:99px;color:#b9c5d8;margin-left:7px}
+    @media(max-width:700px){header,main{padding:12px}th,td{padding:10px 8px}.ca{font-size:11px}.hideSmall{display:none}}
+    [hidden]{display:none!important}.tabs{display:flex;gap:8px;margin-bottom:16px}.historyTools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:14px 16px}.historyNote{color:var(--dim);padding:0 16px 12px;margin:0}.historyScroll{overflow-x:auto}.historyScroll table{min-width:980px}.historyTime{white-space:nowrap;font-variant-numeric:tabular-nums}.historyTime small{display:block;color:var(--dim);margin-top:4px}input{background:#1a2130;border:1px solid var(--line);border-radius:7px;color:var(--text);padding:8px;width:320px;max-width:100%}button:disabled{opacity:.45;cursor:default}
+    .buySettings{gap:16px}.buySettings label{display:flex;flex-direction:column;gap:5px}.buySettings input{width:200px}.buySettings select{width:200px;background:#1a2130;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:8px}.buySettings select:disabled{opacity:.45}.tradeActions{flex-wrap:wrap}#tradeStart{background:#176948;border-color:#32c48d}#tradePause{color:var(--red);border-color:var(--red)}#tradeReadiness{white-space:pre-line}#tradeModeBadge.live{color:var(--green);border-color:var(--green)}
+  </style>
+</head>
+<body>
+<header><h1>Meme Quant · 候补监控</h1><div class="status"><span id="dot" class="dot"></span><span id="status">连接中…</span></div></header>
+<main>
+  <nav class="tabs" aria-label="监控视图"><button id="candidateTab" class="active" aria-pressed="true">B/C 候补</button><button id="historyTab" aria-pressed="false">B 币历史</button></nav>
+  <section class="section">
+    <div class="sectionHead"><h2>系统开关</h2><button id="shutdownSystem" style="color:var(--red);border-color:var(--red)" disabled>关闭后端及甲乙丙丁窗口</button></div>
+    <p id="systemStatus" class="historyNote" role="status" aria-live="polite" style="padding-top:12px">正在读取系统状态…</p>
+    <p class="historyNote">停止监控、窗口调度及自动买入，锁定钱包，并关闭四个 GMGN 专用窗口；不影响其他浏览器窗口，不删除数据，也不会卖出持仓。已广播的交易无法撤回。再次启动请运行 start-system.ps1，再按需点击插件的“创建/修复四个窗口并启动”（买入不会自动开启）。</p>
+  </section>
+  <section class="section">
+    <div class="sectionHead"><h2>自动买入 <span id="tradeModeBadge" class="pill">默认关闭</span></h2><div class="tools tradeActions"><button id="tradeStart" disabled>开启自动买入</button><button id="tradePause">关闭自动买入</button><button id="tradeLock">关闭并锁定钱包</button></div></div>
+    <div class="historyTools"><span id="tradeStatus" role="status">正在读取交易执行器…</span></div>
+    <form id="tradeSettingsForm" class="historyTools buySettings">
+      <label>单笔买入金额（BNB）<input id="tradeAmount" type="text" inputmode="decimal" maxlength="60" autocomplete="off" placeholder="例如 0.005" required></label>
+      <label>允许滑点（%）<input id="tradeSlippage" type="text" inputmode="decimal" maxlength="8" autocomplete="off" placeholder="请自行填写，例如 1" required></label>
+      <label>Gas 模式<select id="tradeGasMode"><option value="AUTOMATIC">节点建议价 + 加价率</option><option value="FIXED">固定 Gas 价格</option></select></label>
+      <label>自动 Gas 加价率（%）<input id="tradeGasMarkup" type="text" inputmode="decimal" maxlength="8" autocomplete="off" placeholder="10 = 建议价 × 1.10"></label>
+      <label>固定 Gas 价格（Gwei）<input id="tradeFixedGas" type="text" inputmode="decimal" maxlength="40" autocomplete="off" placeholder="固定模式时必填"></label>
+      <label>Gas 价格上限（Gwei）<input id="tradeGasPriceCap" type="text" inputmode="decimal" maxlength="40" autocomplete="off" required></label>
+      <label>单笔 Gas 手续费上限（BNB）<input id="tradeGasFeeCap" type="text" inputmode="decimal" maxlength="60" autocomplete="off" required></label>
+      <button id="tradeSave" type="submit" disabled>保存买入与 Gas 参数</button><span id="tradeSettingsStatus" role="status">自动买入关闭时可修改；保存不会开启买入。</span>
+    </form>
+    <p id="tradeGasCeiling" class="historyNote"></p>
+    <p class="historyNote">Gas 手续费上限不含买入本金；估算 Gas 已加 25% 余量。超过价格或手续费上限就取消，不会自行加价或重买。固定价格过低可能无法入块；加价也不保证抢先成交。当前仍使用原交易 RPC，私有通道及 Builder 小费未接入，因此不支付额外 Builder 小费。本设置不是 GMGN 网页的优先费，也不会加快窗口加载。</p>
+    <p id="tradeBudgetNote" class="historyNote">累计买入预算：暂不设置。开启后可能持续消耗 BNB，直到关闭、余额不足或安全保护触发。</p>
+    <p id="tradeReadiness" class="historyNote" role="status"></p>
+    <div class="historyTools"><label>局域网控制口令 <input id="controlToken" type="password" autocomplete="off" placeholder="开启、关闭、设置、删除及清空；不是钱包密码"></label><button id="tradeDryRun" disabled>模拟预检（不签名、不发交易）</button></div>
+    <form id="walletUnlockForm" class="historyTools" hidden><label>本机钱包密码 <input id="walletPassword" type="password" autocomplete="off" maxlength="1024"></label><button type="submit">解锁钱包（买入仍关闭）</button></form>
+    <p class="historyNote">只买首次成为 B 且当场获得空闲 Slot 的新币，买入预检与 GMGN 跳转并行，不等页面 ACK。四窗满时的候补、后续补位、C 复活永远不买；每个 CA 最多一次买入尝试。关闭会取消未广播意图，已广播交易无法撤回。×、DEAD、清空观察池均不会卖出持仓。重启或浏览器断线后不会自动恢复买入。</p>
+    <div class="historyScroll"><table><thead><tr><th>Token / Slot</th><th>订单状态</th><th>B / 报价 / 签名</th><th>广播 / 入块 / 确认</th><th>到账原始量 / 余额</th><th>说明 / 哈希</th></tr></thead><tbody id="tradeRows"><tr><td colspan="6" class="empty">尚无交易记录</td></tr></tbody></table></div>
+  </section>
+  <details class="section">
+    <summary class="sectionHead">GMGN 跳转延迟诊断（点击展开）</summary>
+    <p class="historyNote">仅显示每个 Slot 最近一次 OPEN 的分段耗时，不影响候补排序或买入。“图表容器”不等于 K 线已经绘制完成；未观测到的阶段不会显示成 0。</p>
+    <p id="slotWarning" class="historyNote" role="status"></p>
+    <div class="historyScroll"><table><thead><tr><th>窗口</th><th>OPEN→插件收到</th><th>收到→导航</th><th>导航→URL确认</th><th>导航→文档就绪</th><th>导航→图表容器</th></tr></thead><tbody id="latencyRows"></tbody></table></div>
+  </details>
+  <div id="candidatePanel">
+  <section class="section"><div class="sectionHead"><div><h2>重新开始监控</h2><div id="resetStatus" role="status">清空当前 A/B/C 和四窗口；保留永久淘汰记录及配置。仅接收清空后的新币。</div></div><button id="resetMonitor" style="color:var(--red)">清空并重新监控</button></div></section>
+  <section class="section"><div class="sectionHead"><h2>B 候补池 <span id="bCount" class="pill">0</span></h2><div class="tools"><button id="sortCreated" class="active">创建时间</button><button id="sortMcap">市值</button></div></div>
+    <table><thead><tr><th></th><th>Token Name</th><th>Platform</th><th>CA</th><th>Market Cap</th><th class="hideSmall">创建时间</th></tr></thead><tbody id="bRows"></tbody></table></section>
+  <section class="section"><div class="sectionHead"><h2>C 观察池 <span id="cCount" class="pill">0</span></h2></div>
+    <table><thead><tr><th></th><th>Token Name</th><th>Platform</th><th>CA</th><th>Market Cap</th><th class="hideSmall">剩余时间</th></tr></thead><tbody id="cRows"></tbody></table></section>
+  </div>
+  <section id="historyPanel" class="section" hidden>
+    <div class="sectionHead"><h2>B 币历史 · 北京时间（UTC+8）</h2><button id="historyRefresh">刷新记录</button></div>
+    <form id="historySearchForm" class="historyTools"><input id="historySearch" type="search" maxlength="100" placeholder="输入 CA、名称或 Symbol" aria-label="搜索 B 币历史"><button type="submit">搜索</button><span id="historyStatus" role="status">尚未加载</span></form>
+    <p class="historyNote">粗体时间为后端确认成为 B 的时间，不是进入窗口的时间。链上条件时间来自已处理事件（秒级），不是全链回放核验的最早时间；旧记录或证据不足显示未知。重启、永久淘汰和“清空并重新监控”均保留历史。</p>
+    <div class="historyScroll"><table><thead><tr><th>名称</th><th>平台</th><th>CA</th><th>首次成为 B</th><th>第二次成为 B</th><th>当前状态</th></tr></thead><tbody id="historyRows"></tbody></table></div>
+    <div class="historyTools"><button id="historyPrev">上一页</button><span id="historyPage"></span><button id="historyNext">下一页</button><span class="status">按最近一次成为 B 的时间倒序</span></div>
+  </section>
+</main>
+<script src="/latency.js"></script>
+<script>
+let bSort='created';
+const $=id=>document.getElementById(id);
+let resetBusy=false, resetSubmitted=false;
+async function candidateState(){let r=await fetch('/api/candidates',{cache:'no-store'});if(r.status===404)r=await fetch('/api/state',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);return r.json()}
+async function updateResetStatus(s){try{s=s||await candidateState();$('resetMonitor').disabled=resetBusy||s.resetPending||window.systemStopping;if(s.resetPending){resetSubmitted=true;$('resetStatus').textContent='已清空旧观察池，正在等待四个浏览器窗口确认返回首页；请保持插件连接。'}else if(resetSubmitted&&!resetBusy){$('resetStatus').textContent='已重新开始监控，四窗口已确认就绪。';resetSubmitted=false}}catch(_){}}
+$('resetMonitor').onclick=async()=>{if(resetBusy||!confirm('清空所有当前 A/B/C（包括四窗口内的币），并从最新区块重新监控？\n将暂停买入并取消未广播意图。不会卖出持仓，已广播交易仍需核对。\n旧币将永久淘汰；配置及四窗口绑定保留。此操作不可撤销。'))return;resetBusy=true;$('resetMonitor').disabled=true;$('resetStatus').textContent='正在取得最新区块并清空，请稍候…';try{const r=await fetch('/api/reset',{method:'POST',headers:window.controlHeaders(),body:JSON.stringify({confirm:true})});if(!r.ok)throw Error(await r.text());const result=await r.json();resetSubmitted=true;$('resetStatus').textContent='已清空。新起点：区块 '+result.boundary+' 之后，等待四窗口确认。';await refresh()}catch(e){$('resetStatus').textContent=e.message}finally{resetBusy=false;$('resetMonitor').disabled=false;await updateResetStatus()}};
+
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function money(n){if(!Number.isFinite(n))return '待解析';if(n>=1e9)return '$'+(n/1e9).toFixed(2)+'B';if(n>=1e6)return '$'+(n/1e6).toFixed(2)+'M';if(n>=1e3)return '$'+(n/1e3).toFixed(2)+'K';return '$'+n.toFixed(2)}
+  function row(t,extra){const cap=t.marketCapUsd==null?NaN:Number(t.marketCapUsd);return `<tr><td><button class="remove" title="永久淘汰" data-ca="${esc(t.token)}">×</button></td><td>${esc(t.name||t.symbol||'未命名')}</td><td>${esc(t.platform||'未知')}</td><td class="ca">${esc(t.token)}</td><td class="money">${money(cap)}</td><td class="hideSmall">${extra}</td></tr>`}
+async function discard(ca){if(!confirm('永久淘汰 '+ca+'？\n取消未广播买入；不会卖出已有持仓。'))return;try{const r=await fetch('/api/blacklist',{method:'POST',headers:window.controlHeaders(),body:JSON.stringify({token:ca})});if(!r.ok)throw Error(await r.text());await refresh()}catch(e){alert('删除未完成：'+e.message)}}
+async function refresh(){try{const s=await candidateState();await updateResetStatus(s);window.renderBrowserLatency?.(s);$('dot').className='dot ok';$('status').textContent=s.status||'后端在线';let b=(s.tokens||[]).filter(t=>(t.state==='B_PENDING'||t.state==='B_REENTRY_PENDING')&&!t.currentSlot);let c=(s.tokens||[]).filter(t=>t.state==='C_WATCHING');b.sort(bSort==='mcap'?(a,z)=>(z.marketCapUsd??-1)-(a.marketCapUsd??-1):(a,z)=>a.createdTs-z.createdTs);$('bCount').textContent=b.length;$('cCount').textContent=c.length;$('bRows').innerHTML=b.length?b.map(t=>row(t,new Date(t.createdTs*1000).toLocaleString())).join(''):'<tr><td colspan="6" class="empty">暂无候补 B 币</td></tr>';const now=Date.now()/1000;$('cRows').innerHTML=c.length?c.map(t=>row(t,Math.max(0,240-(now-(t.cEnteredAt||now))).toFixed(0)+' 秒')).join(''):'<tr><td colspan="6" class="empty">暂无 C 币</td></tr>';document.querySelectorAll('.remove').forEach(x=>x.onclick=()=>discard(x.dataset.ca))}catch(e){$('dot').className='dot';$('status').textContent='后端未连接：'+e.message}}
+$('sortCreated').onclick=()=>{bSort='created';$('sortCreated').className='active';$('sortMcap').className='';refresh()};$('sortMcap').onclick=()=>{bSort='mcap';$('sortMcap').className='active';$('sortCreated').className='';refresh()};refresh();setInterval(refresh,1000);
+</script><script src="/history.js"></script><script src="/trading.js"></script><script src="/system.js"></script></body></html>

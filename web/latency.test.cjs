@@ -1,0 +1,10 @@
+const assert = require("node:assert/strict");
+const {interval,render} = require("./latency.js");
+assert.equal(interval(100,550),"450 ms");
+assert.equal(interval(100,null),"待观测");
+assert.equal(interval(550,100),"时钟偏差");
+const html = render({browserTimings:[{slotId:'<script>',openSentAtMs:100,receivedAtMs:103,navigationRequestedAtMs:105,urlConfirmedAtMs:555}]});
+assert.ok(html.includes("&lt;script&gt;")); assert.ok(!html.includes("<script>"));
+assert.ok(html.includes("450 ms")); assert.ok(html.includes("待观测"));
+assert.ok(!html.includes("ca"),"诊断表不显示四窗口内币的候补条目");
+console.log("latency diagnostic formatting / missing phase / clock skew / escaping tests passed");

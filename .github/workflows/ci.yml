@@ -1,0 +1,32 @@
+name: Offline source verification
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: windows-latest
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/meme-quant-target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install current stable Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt
+      - name: Format and offline fixtures
+        run: |
+          cargo +stable fmt --check
+          cargo +stable test --locked
+          cargo +stable test --locked --features live-trading
+      - name: JavaScript fixtures
+        run: node scripts/test-js.cjs
+      - name: Source export guard
+        run: |
+          python scripts/check-release.py
+          python -m unittest discover -s scripts -p "test_*.py"

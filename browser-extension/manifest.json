@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Meme Quant · GMGN 扫链",
+  "version": "3.1.4",
+  "description": "执行 Rust 后端的四窗口 GMGN 调度命令，并回传实际 URL 与 ACK。",
+  "permissions": [
+    "alarms",
+    "storage",
+    "tabs",
+    "system.display"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8787/*",
+    "ws://127.0.0.1:8787/*",
+    "https://gmgn.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "GMGN 扫链控制",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://gmgn.ai/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

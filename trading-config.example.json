@@ -1,0 +1,20 @@
+{
+  "allowLive": false,
+  "walletKeyFile": null,
+  "rpcUrl": null,
+  "simulationFrom": null,
+  "amountWei": "5000000000000000",
+  "slippageBps": null,
+  "sessionBudgetWei": "0",
+  "dailyBudgetWei": "0",
+  "gasPriceCapWei": "5000000000",
+  "gasLimitCap": 600000,
+  "gasReserveWei": "2000000000000000",
+  "quoteTtlMs": 5000,
+  "maxSignalAgeMs": 10000,
+  "deadlineSecs": 60,
+  "confirmations": 3,
+  "pendingTimeoutSecs": 120,
+  "maxConsecutiveFailures": 3,
+  "maxQueue": 16
+}
