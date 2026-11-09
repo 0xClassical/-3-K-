@@ -5,8 +5,6 @@ permissions:
 jobs:
   verify:
     runs-on: windows-latest
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/meme-quant-target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -20,6 +18,8 @@ jobs:
       - name: Install current stable Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt
       - name: Format and offline fixtures
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/meme-quant-target
         run: |
           cargo +stable fmt --check
           cargo +stable test --locked
