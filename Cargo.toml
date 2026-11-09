@@ -1,6 +1,6 @@
 [package]
 name = "meme-quant"
-version = "3.4.2-oss.1"
+version = "3.4.3-oss.1"
 edition = "2021"
 description = "BSC 多 Launchpad meme 量化监测：统一建币入口 -> A/B/C 状态机 -> GMGN 调度"
 license = "MIT"

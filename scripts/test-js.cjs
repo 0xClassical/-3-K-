@@ -4,7 +4,7 @@ const {spawnSync} = require('node:child_process');
 const root = path.resolve(__dirname,'..');
 const files = [
   'browser-extension/slot-layout.test.js', 'browser-extension/background.test.js', 'browser-extension/content.test.js',
-  'web/history.test.cjs', 'web/latency.test.cjs', 'web/trading.test.cjs', 'web/system.test.cjs',
+  'web/health.test.cjs', 'web/history.test.cjs', 'web/latency.test.cjs', 'web/trading.test.cjs', 'web/system.test.cjs',
 ];
 for (const file of files) {
   const result = spawnSync(process.execPath,[path.join(root,file)],{cwd:root,stdio:'inherit'});

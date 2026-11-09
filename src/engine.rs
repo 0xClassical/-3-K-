@@ -567,6 +567,7 @@ struct Slot {
 /// HTTP 层读取的共享视图。引擎在关键节点写入。
 #[derive(Clone, Default)]
 pub struct Shared {
+    pub recovery_wake: Arc<tokio::sync::Notify>,
     pub system: Arc<crate::system::Control>,
     pub trading: Arc<OnceLock<crate::trading::Trading>>,
     pub reset_pending: Arc<AtomicU64>,
@@ -1004,9 +1005,7 @@ impl Engine {
             if t.quote_token == quote {
                 let mcap = t.last_mcap_quote * usd;
                 t.last_mcap_usd = (mcap.is_finite() && mcap >= 0.0).then_some(mcap);
-                if t.stage.is_b() {
-                    t.cycle_max_market_cap = t.cycle_max_market_cap.max(mcap);
-                }
+                record_b_market_cap(t, now_unix(), mcap);
                 touched.push(ca);
             }
         }
@@ -1060,6 +1059,14 @@ impl Engine {
 
     /// 把当前视图写入共享区，供 HTTP 首次加载与 SSE 重连时使用。
     async fn sync_shared(&self) {
+        let stream = self.client.stream_snapshot();
+        {
+            let mut health = self.shared.ingestion.write().await;
+            health.head_block = health.head_block.max(stream.last_header_block);
+            health.scanned_block = self.shared.last_scanned_block.load(Ordering::Relaxed);
+            health.gap_blocks = health.head_block.saturating_sub(health.scanned_block);
+            health.stream = Some(stream);
+        }
         let mut snaps: Vec<TokenSnapshot> = self
             .tokens
             .live_values()
@@ -1116,6 +1123,7 @@ impl Engine {
             .last_scanned_block
             .store(boundary, Ordering::Relaxed);
         self.shared.reset_pending.store(id, Ordering::Relaxed);
+        self.shared.recovery_wake.notify_one();
         for (ca, token) in self.tokens.iter_mut() {
             if !token.stage.is_terminal() {
                 token.stage = Stage::Dead;
@@ -1201,16 +1209,19 @@ impl Engine {
                 tokio::spawn(async move {
                     let boundary = match tokio::time::timeout(
                         Duration::from_secs(10),
-                        client.call("eth_blockNumber", serde_json::json!([])),
+                        crate::recovery::latest_reset_head(Some(client)),
                     )
                     .await
                     {
-                        Ok(Ok(v)) => v
-                            .as_str()
-                            .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
-                            .filter(|b| *b > 0)
-                            .ok_or_else(|| "节点未返回有效区块高度".into()),
-                        _ => Err("无法取得最新区块，未清空任何数据，请待节点连接恢复后重试".into()),
+                        Ok(Ok(head)) => {
+                            eprintln!(
+                                "[reset] 已确认独立区块头 block={} source={}",
+                                head.block, head.source
+                            );
+                            Ok(head.block)
+                        }
+                        Ok(Err(e)) => Err(e),
+                        Err(_) => Err("独立节点查询超时，未清空任何数据，请稍后重试".into()),
                     };
                     let _ = commands.send(Command::CommitReset { boundary, reply });
                 });
@@ -2925,10 +2936,8 @@ impl Engine {
                 self.quote_usd.get(&st.quote_token).copied()
             };
             st.last_mcap_usd = usd.map(|p| mcap_quote * p);
-            if st.stage.is_b() {
-                if let Some(mcap) = st.last_mcap_usd {
-                    st.cycle_max_market_cap = st.cycle_max_market_cap.max(mcap);
-                }
+            if let Some(mcap) = st.last_mcap_usd {
+                record_b_market_cap(st, now_unix(), mcap);
             }
             st.last_activity = Instant::now();
             st.trade_seq += 1;
@@ -3373,6 +3382,7 @@ impl Engine {
         let unix = now_unix();
         let mut c_expired = Vec::new();
         let mut b_expired = Vec::new();
+        let mut advanced = Vec::new();
         for (ca, st) in self.tokens.live_iter() {
             if st.stage == Stage::CWatching
                 && st
@@ -3381,45 +3391,26 @@ impl Engine {
             {
                 c_expired.push(ca.clone());
             }
-            if st.stage.is_b() {
-                if let Some(start) = st.current_cycle_start {
-                    if unix >= start + config::B_CYCLE.as_secs()
-                        && st.last_mcap_usd.is_some()
-                        && st.cycle_max_market_cap < config::B_CYCLE_MIN_USD
-                    {
-                        b_expired.push(ca.clone());
-                    }
-                }
+        }
+        for ca in self.tokens.live_keys() {
+            let st = self.tokens.get_mut(&ca).expect("active token");
+            match settle_b_cycle(st, unix) {
+                BCycleOutcome::Expired => b_expired.push(ca),
+                BCycleOutcome::Advanced => advanced.push(ca),
+                BCycleOutcome::Unchanged => {}
             }
         }
         for ca in c_expired {
             self.purge(&ca, "C 币 240 秒内未重新出现三连阳").await;
         }
         for ca in b_expired {
-            self.purge(&ca, "B 币本 600 秒周期市值从未达到 $10,000")
-                .await;
+            self.purge(
+                &ca,
+                "B 币 600 秒周期没有达到 $10,000 的有效记录（未知市值不豁免）",
+            )
+            .await;
         }
 
-        let mut advanced = Vec::new();
-        for ca in self.tokens.live_keys() {
-            let st = self
-                .tokens
-                .get_mut(&ca)
-                .expect("active index refers to TokenState");
-            if st.stage.is_b() {
-                while st
-                    .current_cycle_start
-                    .is_some_and(|start| unix >= start + config::B_CYCLE.as_secs())
-                    && st.cycle_max_market_cap >= config::B_CYCLE_MIN_USD
-                {
-                    st.current_cycle_start = st
-                        .current_cycle_start
-                        .map(|v| v + config::B_CYCLE.as_secs());
-                    st.cycle_max_market_cap = st.last_mcap_usd.unwrap_or(0.0);
-                    advanced.push(ca.clone());
-                }
-            }
-        }
         for ca in advanced {
             self.persist(&ca);
         }
@@ -3510,6 +3501,48 @@ impl Engine {
 ///
 /// 做成自由函数而非 `&self` 方法：`promote` 需要在持有 `get_mut` 可变借用时
 /// 同时读取状态，方法形式会触发借用冲突。
+#[derive(Debug, PartialEq, Eq)]
+enum BCycleOutcome {
+    Unchanged,
+    Advanced,
+    Expired,
+}
+
+fn settle_b_cycle(st: &mut TokenState, now: u64) -> BCycleOutcome {
+    if !st.stage.is_b() {
+        return BCycleOutcome::Unchanged;
+    }
+    let Some(start) = st.current_cycle_start else {
+        return BCycleOutcome::Unchanged;
+    };
+    let end = start.saturating_add(config::B_CYCLE.as_secs());
+    if now < end {
+        return BCycleOutcome::Unchanged;
+    }
+    if !st.cycle_max_market_cap.is_finite() || st.cycle_max_market_cap < config::B_CYCLE_MIN_USD {
+        return BCycleOutcome::Expired;
+    }
+    // Exactly one completed cycle can pass on its own peak. An old price must
+    // not prove every missed 600s interval after a long shutdown.
+    st.current_cycle_start = Some(end);
+    st.cycle_max_market_cap = 0.0;
+    if now >= end.saturating_add(config::B_CYCLE.as_secs()) {
+        BCycleOutcome::Expired
+    } else {
+        BCycleOutcome::Advanced
+    }
+}
+
+fn record_b_market_cap(st: &mut TokenState, now: u64, cap: f64) {
+    if st.stage.is_b()
+        && settle_b_cycle(st, now) != BCycleOutcome::Expired
+        && cap.is_finite()
+        && cap >= 0.0
+    {
+        st.cycle_max_market_cap = st.cycle_max_market_cap.max(cap);
+    }
+}
+
 fn snapshot_of(st: &TokenState) -> TokenSnapshot {
     let mut candles: Vec<Candle> = st.candles.values().copied().collect();
     // 只回传最近窗口，避免长时间运行后快照过大。
@@ -4019,6 +4052,12 @@ mod tests {
     async fn reset_advances_scan_barrier_and_late_old_markers_cannot_undo_it() {
         let mut engine = bare_engine();
         engine.reset_monitoring(500).await.unwrap();
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            engine.shared.recovery_wake.notified(),
+        )
+        .await
+        .expect("explicit reset must wake recovery without waiting for cooldown");
         engine.on_log(crate::recovery::checkpoint(0, 499, 0)).await;
         assert_eq!(
             engine.shared.last_scanned_block.load(Ordering::Relaxed),
@@ -4117,6 +4156,67 @@ mod tests {
         engine.slots[i].state = SlotState::Empty;
         engine.slots[i].browser_window_id = Some(17 + i as i64);
         engine.slots[i].browser_tab_id = Some(31 + i as i64);
+    }
+
+    #[test]
+    fn b_unknown_market_cap_expires_and_peak_does_not_roll_across_cycles() {
+        let mut t = state(100);
+        t.stage = Stage::BPending;
+        t.current_cycle_start = Some(100);
+        t.last_mcap_usd = None;
+        t.cycle_max_market_cap = 0.0;
+        assert_eq!(settle_b_cycle(&mut t, 699), BCycleOutcome::Unchanged);
+        assert_eq!(settle_b_cycle(&mut t, 700), BCycleOutcome::Expired);
+        record_b_market_cap(&mut t, 701, 50_000.0);
+        assert_eq!(
+            t.cycle_max_market_cap, 0.0,
+            "late update cannot rescue an already failed cycle"
+        );
+        t.cycle_max_market_cap = 12_000.0;
+        t.last_mcap_usd = Some(50_000.0);
+        assert_eq!(settle_b_cycle(&mut t, 700), BCycleOutcome::Advanced);
+        assert_eq!(t.current_cycle_start, Some(700));
+        assert_eq!(t.cycle_max_market_cap, 0.0);
+        assert_eq!(settle_b_cycle(&mut t, 1300), BCycleOutcome::Expired);
+    }
+
+    #[test]
+    fn b_new_observation_counts_in_new_cycle_but_gap_or_c_does_not_inherit() {
+        let mut t = state(100);
+        t.stage = Stage::BReentryPending;
+        t.current_cycle_start = Some(100);
+        t.cycle_max_market_cap = 12_000.0;
+        record_b_market_cap(&mut t, 701, 11_000.0);
+        assert_eq!(t.current_cycle_start, Some(700));
+        assert_eq!(t.cycle_max_market_cap, 11_000.0);
+        t.current_cycle_start = Some(100);
+        t.cycle_max_market_cap = 99_000.0;
+        assert_eq!(settle_b_cycle(&mut t, 10_000), BCycleOutcome::Expired);
+        t.stage = Stage::CWatching;
+        assert_eq!(settle_b_cycle(&mut t, 10_000), BCycleOutcome::Unchanged);
+    }
+
+    #[tokio::test]
+    async fn tick_removes_overdue_unknown_b_and_preserves_tombstone() {
+        let mut engine = bare_engine();
+        let ca = "0x2222222222222222222222222222222222222222";
+        let mut t = state(now_unix() - 1200);
+        t.token = ca.into();
+        t.stage = Stage::BPending;
+        t.first_b_at = Some(now_unix() - 1200);
+        t.current_cycle_start = Some(now_unix() - 1200);
+        t.last_mcap_usd = None;
+        t.cycle_max_market_cap = 0.0;
+        engine.tokens.insert(ca.into(), t);
+        engine.on_tick().await;
+        assert_eq!(engine.tokens[ca].stage, Stage::Dead);
+        assert!(engine.blacklist.contains(ca));
+        assert!(engine
+            .store
+            .load_tokens()
+            .unwrap()
+            .iter()
+            .any(|t| t.ca == ca && t.current_state == "DEAD"));
     }
 
     #[test]

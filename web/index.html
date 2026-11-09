@@ -7,7 +7,7 @@
     :root{color-scheme:dark;--bg:#090c12;--card:#121722;--line:#293142;--text:#edf1f7;--dim:#8e9aaf;--gold:#f0b90b;--green:#32c48d;--red:#ff6670}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif}
     header{position:sticky;top:0;z-index:2;display:flex;align-items:center;justify-content:space-between;padding:16px 24px;background:#0c1018e8;border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}
-    h1{font-size:18px;margin:0}.status{color:var(--dim)}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);margin-right:7px}.dot.ok{background:var(--green)}
+    h1{font-size:18px;margin:0}.status{color:var(--dim);max-width:70%;overflow-wrap:anywhere}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--red);margin-right:7px}.dot.ok{background:var(--green)}.dot.warn{background:var(--gold)}
     main{max-width:1280px;margin:auto;padding:22px}.section{background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:20px;overflow:hidden}
     .sectionHead{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}h2{font-size:15px;margin:0}.tools{display:flex;gap:8px}
     button{border:1px solid var(--line);border-radius:7px;background:#1a2130;color:var(--text);padding:7px 11px;cursor:pointer}button.active{border-color:var(--gold);color:var(--gold)}button.remove{font-size:20px;line-height:1;padding:4px 9px;color:var(--red);background:transparent}
@@ -21,6 +21,7 @@
 <header><h1>Meme Quant · 候补监控</h1><div class="status"><span id="dot" class="dot"></span><span id="status">连接中…</span></div></header>
 <main>
   <nav class="tabs" aria-label="监控视图"><button id="candidateTab" class="active" aria-pressed="true">B/C 候补</button><button id="historyTab" aria-pressed="false">B 币历史</button></nav>
+  <section class="section"><div class="sectionHead"><h2>监控健康</h2></div><p id="monitorHealthSummary" class="historyNote" style="padding-top:12px" role="status">正在确认订阅及补扫状态…</p><p id="monitorHealthDetails" class="historyNote"></p><p class="historyNote">绿灯只在订阅与完整补扫均通过时显示。长时间离线后的积压不会被自动跳过；若只想从现在重新开始，请手动确认“清空并重新监控”（保留历史及永久淘汰记录）。</p></section>
   <section class="section">
     <div class="sectionHead"><h2>系统开关</h2><button id="shutdownSystem" style="color:var(--red);border-color:var(--red)" disabled>关闭后端及甲乙丙丁窗口</button></div>
     <p id="systemStatus" class="historyNote" role="status" aria-live="polite" style="padding-top:12px">正在读取系统状态…</p>
@@ -70,6 +71,7 @@
   </section>
 </main>
 <script src="/latency.js"></script>
+<script src="/health.js"></script>
 <script>
 let bSort='created';
 const $=id=>document.getElementById(id);
@@ -82,6 +84,6 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 function money(n){if(!Number.isFinite(n))return '待解析';if(n>=1e9)return '$'+(n/1e9).toFixed(2)+'B';if(n>=1e6)return '$'+(n/1e6).toFixed(2)+'M';if(n>=1e3)return '$'+(n/1e3).toFixed(2)+'K';return '$'+n.toFixed(2)}
   function row(t,extra){const cap=t.marketCapUsd==null?NaN:Number(t.marketCapUsd);return `<tr><td><button class="remove" title="永久淘汰" data-ca="${esc(t.token)}">×</button></td><td>${esc(t.name||t.symbol||'未命名')}</td><td>${esc(t.platform||'未知')}</td><td class="ca">${esc(t.token)}</td><td class="money">${money(cap)}</td><td class="hideSmall">${extra}</td></tr>`}
 async function discard(ca){if(!confirm('永久淘汰 '+ca+'？\n取消未广播买入；不会卖出已有持仓。'))return;try{const r=await fetch('/api/blacklist',{method:'POST',headers:window.controlHeaders(),body:JSON.stringify({token:ca})});if(!r.ok)throw Error(await r.text());await refresh()}catch(e){alert('删除未完成：'+e.message)}}
-async function refresh(){try{const s=await candidateState();await updateResetStatus(s);window.renderBrowserLatency?.(s);$('dot').className='dot ok';$('status').textContent=s.status||'后端在线';let b=(s.tokens||[]).filter(t=>(t.state==='B_PENDING'||t.state==='B_REENTRY_PENDING')&&!t.currentSlot);let c=(s.tokens||[]).filter(t=>t.state==='C_WATCHING');b.sort(bSort==='mcap'?(a,z)=>(z.marketCapUsd??-1)-(a.marketCapUsd??-1):(a,z)=>a.createdTs-z.createdTs);$('bCount').textContent=b.length;$('cCount').textContent=c.length;$('bRows').innerHTML=b.length?b.map(t=>row(t,new Date(t.createdTs*1000).toLocaleString())).join(''):'<tr><td colspan="6" class="empty">暂无候补 B 币</td></tr>';const now=Date.now()/1000;$('cRows').innerHTML=c.length?c.map(t=>row(t,Math.max(0,240-(now-(t.cEnteredAt||now))).toFixed(0)+' 秒')).join(''):'<tr><td colspan="6" class="empty">暂无 C 币</td></tr>';document.querySelectorAll('.remove').forEach(x=>x.onclick=()=>discard(x.dataset.ca))}catch(e){$('dot').className='dot';$('status').textContent='后端未连接：'+e.message}}
+async function refresh(){try{const s=await candidateState();await updateResetStatus(s);window.renderBrowserLatency?.(s);window.updateMonitorConnection?.(s.status,s.ingestion,s.serverTimeMs);let b=(s.tokens||[]).filter(t=>(t.state==='B_PENDING'||t.state==='B_REENTRY_PENDING')&&!t.currentSlot);let c=(s.tokens||[]).filter(t=>t.state==='C_WATCHING');b.sort(bSort==='mcap'?(a,z)=>(z.marketCapUsd??-1)-(a.marketCapUsd??-1):(a,z)=>a.createdTs-z.createdTs);$('bCount').textContent=b.length;$('cCount').textContent=c.length;$('bRows').innerHTML=b.length?b.map(t=>row(t,new Date(t.createdTs*1000).toLocaleString())).join(''):'<tr><td colspan="6" class="empty">暂无候补 B 币</td></tr>';const now=Date.now()/1000;$('cRows').innerHTML=c.length?c.map(t=>row(t,Math.max(0,240-(now-(t.cEnteredAt||now))).toFixed(0)+' 秒')).join(''):'<tr><td colspan="6" class="empty">暂无 C 币</td></tr>';document.querySelectorAll('.remove').forEach(x=>x.onclick=()=>discard(x.dataset.ca))}catch(e){window.monitorConnectionFailed?.();$('status').textContent='后端未连接：'+e.message}}
 $('sortCreated').onclick=()=>{bSort='created';$('sortCreated').className='active';$('sortMcap').className='';refresh()};$('sortMcap').onclick=()=>{bSort='mcap';$('sortMcap').className='active';$('sortCreated').className='';refresh()};refresh();setInterval(refresh,1000);
 </script><script src="/history.js"></script><script src="/trading.js"></script><script src="/system.js"></script></body></html>

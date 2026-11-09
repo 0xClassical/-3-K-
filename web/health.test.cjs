@@ -1,0 +1,14 @@
+'use strict';
+const assert=require('node:assert/strict');
+const {evaluate}=require('./health.js');
+const now=1_800_000_000_000;
+const healthy={state:'verified',gapBlocks:2,headBlock:100,scannedBlock:98,lastSuccessAtMs:now-1000,stream:{lastHeaderAtMs:now-500}};
+assert.equal(evaluate(healthy,now,'live: node').level,'ok');
+const limited=evaluate({...healthy,state:'retrying',lastError:'Rate limit exceeded',gapBlocks:6_840_000,nextRetryAtMs:now+10000},now,'live: node');
+assert.equal(limited.level,'warn');assert.match(limited.summary,/限流/);assert.match(limited.summary,/6,840,000/);assert.match(limited.detail,/10 秒后/);
+assert.equal(evaluate(healthy,now,'connecting').level,'warn');
+assert.equal(evaluate({...healthy,stream:{lastHeaderAtMs:now-60_000}},now,'live: node').level,'warn');
+assert.equal(evaluate({...healthy,lastSuccessAtMs:now-60_000},now,'live: node').level,'warn');
+assert.equal(evaluate(null,now,'live: node').level,'warn');
+assert.equal(evaluate({...healthy,stream:null,lastSuccessAtMs:0},now,'live: node').level,'warn');
+console.log('health diagnostics tests passed: live socket alone never implies verified monitoring');

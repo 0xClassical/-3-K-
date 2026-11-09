@@ -83,6 +83,8 @@ pub async fn serve(
         .route("/api/state", get(api_state))
         .route("/api/candidates", get(api_candidates))
         .route("/latency.js", get(latency_js))
+        .route("/health.js", get(health_js))
+        .route("/api/reset-preview", get(api_reset_preview))
         .route("/api/b-history", get(api_b_history))
         .route("/history.js", get(history_js))
         .route("/trading.js", get(trading_js))
@@ -141,6 +143,44 @@ async fn trading_js(State(st): State<AppState>) -> Response {
         "application/javascript; charset=utf-8",
     )
     .await
+}
+
+async fn health_js(State(st): State<AppState>) -> Response {
+    serve_file(
+        &st.web_root.join("health.js"),
+        "application/javascript; charset=utf-8",
+    )
+    .await
+}
+
+/// Read-only validation of reset's independent head path. Never sends a reset
+/// command, touches SQLite, pauses buying or navigates browser windows.
+async fn api_reset_preview(
+    State(st): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    authorize_control(
+        peer,
+        &headers,
+        st.control_token.as_ref().map(|s| s.as_str()),
+        false,
+    )?;
+    let head = tokio::time::timeout(
+        Duration::from_secs(6),
+        crate::recovery::latest_reset_head(None),
+    )
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "预检查询超时，未清空任何数据".into(),
+        )
+    })?
+    .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
+    Ok(Json(
+        serde_json::json!({"head":head,"readOnly":true,"dataChanged":false}),
+    ))
 }
 
 async fn system_js(State(st): State<AppState>) -> Response {
@@ -584,6 +624,7 @@ pub(crate) async fn api_candidates(State(st): State<AppState>) -> Json<serde_jso
         .collect();
     Json(
         serde_json::json!({"tokens":tokens,"status":status,"browserTimings":timings,
+        "ingestion":shared.ingestion.read().await.clone(),"serverTimeMs":crate::rpc::unix_ms(),
         "slotStates":slot_states,"resetPending":shared.reset_pending.load(std::sync::atomic::Ordering::Relaxed)!=0}),
     )
 }
@@ -931,6 +972,7 @@ async fn api_health(State(st): State<AppState>) -> Json<serde_json::Value> {
     let stats = *st.handle.shared.stats.read().await;
     Json(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
+        "serverTimeMs":crate::rpc::unix_ms(),
         "liveBuild": cfg!(feature="live-trading"),
         "wss": status,
         "live": stats.live_now,

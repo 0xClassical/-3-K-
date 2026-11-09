@@ -8,6 +8,7 @@ use crate::{
     persistence::Store,
     rpc::{self, RawLog},
 };
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{collections::HashSet, sync::atomic::Ordering, time::Duration};
@@ -34,6 +35,50 @@ pub struct RecoveryHealth {
     pub last_error: Option<String>,
     pub transport: String,
     pub stream: Option<rpc::StreamSnapshot>,
+    pub consecutive_failures: u32,
+    pub next_retry_at_ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetHead {
+    pub block: u64,
+    pub timestamp: u64,
+    pub checked_at_ms: u64,
+    pub source: String,
+}
+
+fn checked_head(value: &Value, now_ms: u64) -> Result<(u64, u64), String> {
+    let block = hex(value, "number")?;
+    let timestamp = hex(value, "timestamp")?;
+    if block == 0
+        || timestamp == 0
+        || timestamp.saturating_mul(1000) > now_ms.saturating_add(5000)
+        || now_ms.saturating_sub(timestamp.saturating_mul(1000)) > 30_000
+    {
+        return Err("节点区块头无效或已过期，未清空任何数据".into());
+    }
+    Ok((block, timestamp))
+}
+
+/// Fresh public HTTP pool, separate from recovery cooldown and trading quotas.
+pub async fn latest_reset_head(ws: Option<rpc::Client>) -> Result<ResetHead, String> {
+    let mut reader = Reader::new();
+    reader.ws = ws;
+    reader.reset_head().await
+}
+
+fn retry_delay(failures: u32, error: &str) -> Duration {
+    let limited = error.to_ascii_lowercase();
+    let base = if limited.contains("rate limit")
+        || limited.contains("429")
+        || limited.contains("limit exceeded")
+    {
+        10u64
+    } else {
+        3
+    };
+    Duration::from_secs((base * (1u64 << failures.saturating_sub(1).min(4))).min(60))
 }
 
 struct Reader {
@@ -103,6 +148,54 @@ impl Reader {
                 .report_fault(endpoint, rpc::EndpointFault::Transport),
         }
         result
+    }
+    async fn reset_head(&self) -> Result<ResetHead, String> {
+        let mut requests = FuturesUnordered::new();
+        for endpoint in 0..self.endpoints.len() {
+            requests.push(async move {
+                let value = self
+                    .at(endpoint, "eth_getBlockByNumber", json!(["latest", false]))
+                    .await?;
+                let checked_at_ms = rpc::unix_ms();
+                let (block, timestamp) = checked_head(&value, checked_at_ms)?;
+                Ok::<_, String>(ResetHead {
+                    block,
+                    timestamp,
+                    checked_at_ms,
+                    source: self.endpoints[endpoint].clone(),
+                })
+            });
+        }
+        let mut errors = Vec::new();
+        while let Some(result) = requests.next().await {
+            match result {
+                Ok(head) => return Ok(head),
+                Err(e) => errors.push(e),
+            }
+        }
+        if let Some(ws) = self.ws.as_ref().filter(|w| w.is_live()) {
+            let generation = ws.stream_snapshot().generation;
+            match self
+                .ws_read(generation, "eth_getBlockByNumber", json!(["latest", false]))
+                .await
+            {
+                Ok(value) => {
+                    let checked_at_ms = rpc::unix_ms();
+                    let (block, timestamp) = checked_head(&value, checked_at_ms)?;
+                    return Ok(ResetHead {
+                        block,
+                        timestamp,
+                        checked_at_ms,
+                        source: "public_wss_fallback".into(),
+                    });
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+        Err(format!(
+            "无法确认最新区块（已尝试独立公共备用节点），未清空任何数据：{}",
+            errors.join("; ")
+        ))
     }
     async fn head(&self) -> Result<Head, String> {
         let [healthy, _cooling] = self.health.candidate_groups();
@@ -498,6 +591,8 @@ pub async fn run(client: rpc::Client, tx: broadcast::Sender<RawLog>, shared: Sha
         health.stream = Some(client.stream_snapshot());
         match result {
             Ok(()) => {
+                health.consecutive_failures = 0;
+                health.next_retry_at_ms = 0;
                 health.last_success_at_ms = rpc::unix_ms();
                 health.last_error = None;
                 health.state = if health.gap_blocks > CHUNK {
@@ -512,22 +607,101 @@ pub async fn run(client: rpc::Client, tx: broadcast::Sender<RawLog>, shared: Sha
                     eprintln!("[warn] 补扫失败，进度不推进，自动重试：{error}");
                 }
                 health.state = "retrying".into();
+                health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+                health.next_retry_at_ms = rpc::unix_ms()
+                    + retry_delay(health.consecutive_failures, &error).as_millis() as u64;
                 health.last_error = Some(error);
             }
         }
         *shared.ingestion.write().await = health.clone();
-        let delay = if health.state == "catching_up" {
-            Duration::from_millis(250)
+        let delay = if health.state == "retrying" {
+            Duration::from_millis(health.next_retry_at_ms.saturating_sub(rpc::unix_ms()))
+        } else if health.state == "catching_up" {
+            Duration::from_secs(1)
         } else {
             POLL
         };
-        tokio::time::sleep(delay).await;
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {},
+            _ = shared.recovery_wake.notified() => {
+                // Explicit user reset supplies a new persisted scan boundary.
+                // Recheck immediately, not after the old 60s cooldown. This is
+                // not an automatic history skip; only the actor can reset it.
+                reader = Reader::new();
+                reader.ws = Some(client.clone());
+                health.consecutive_failures = 0;
+                health.next_retry_at_ms = 0;
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_head_validation_and_backoff_are_bounded() {
+        let now = rpc::unix_ms();
+        assert!(checked_head(
+            &json!({"number":"0x1","timestamp":format!("0x{:x}",now/1000)}),
+            now
+        )
+        .is_ok());
+        for ts in [0, now / 1000 - 60, now / 1000 + 60] {
+            assert!(checked_head(
+                &json!({"number":"0x1","timestamp":format!("0x{ts:x}")}),
+                now
+            )
+            .is_err());
+        }
+        assert!(checked_head(&Value::Null, now).is_err());
+        assert_eq!(
+            retry_delay(1, "Rate limit exceeded"),
+            Duration::from_secs(10)
+        );
+        assert_eq!(retry_delay(2, "HTTP 429"), Duration::from_secs(20));
+        assert_eq!(retry_delay(999, "rate limit"), Duration::from_secs(60));
+        assert_eq!(retry_delay(1, "network failure"), Duration::from_secs(3));
+    }
+
+    #[tokio::test]
+    async fn reset_uses_independent_http_and_skips_limited_or_stale_nodes() {
+        let limited = axum::Router::new().route(
+            "/",
+            axum::routing::post(|| async {
+                axum::Json(json!({"error":{"message":"rate limit exceeded"}}))
+            }),
+        );
+        let stale = axum::Router::new().route(
+            "/",
+            axum::routing::post(|| async {
+                axum::Json(json!({"result":{"number":"0x64","timestamp":"0x1"}}))
+            }),
+        );
+        let good = axum::Router::new().route("/",axum::routing::post(|axum::Json(v):axum::Json<Value>|async move {
+            assert_eq!(v["method"],"eth_getBlockByNumber");
+            axum::Json(json!({"result":{"number":"0x65","timestamp":format!("0x{:x}",rpc::unix_ms()/1000)}}))
+        }));
+        let mut endpoints = Vec::new();
+        let mut servers = Vec::new();
+        for app in [limited, stale, good] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            endpoints.push(format!("http://{}/", listener.local_addr().unwrap()));
+            servers.push(tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            }));
+        }
+        let reader = Reader::with_endpoints(endpoints.clone());
+        let head = reader.reset_head().await.unwrap();
+        assert_eq!(head.block, 101);
+        assert_eq!(head.source, endpoints[2]);
+        let bad = Reader::with_endpoints(endpoints[..2].to_vec());
+        assert!(bad.reset_head().await.is_err());
+        for server in servers {
+            server.abort();
+        }
+    }
 
     #[tokio::test]
     async fn blocked_http_can_use_generation_fenced_readonly_ws() {
