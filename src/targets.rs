@@ -1,4 +1,4 @@
-//! Local, user-supplied monitored wallets; no production wallet list is shipped.
+//! Local monitored-wallet configuration; a shared watchlist is supplied as a copyable example.
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::OnceLock;

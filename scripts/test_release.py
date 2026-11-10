@@ -13,7 +13,7 @@ class ReleaseChecks(unittest.TestCase):
         (root / "src").mkdir()
         (root / "src/targets.rs").write_text("// local configuration\n", encoding="utf-8")
         (root / "config").mkdir()
-        (root / "config/targets.example.json").write_text("[]", encoding="utf-8")
+        (root / "config/targets.example.json").write_text(json.dumps(["0x1111111111111111111111111111111111111111"]), encoding="utf-8")
         (root / "README.md").write_text("fixture", encoding="utf-8")
         (root / "LICENSE").write_text("fixture", encoding="utf-8")
         (root / "trading-config.example.json").write_text(json.dumps({"allowLive":False,"walletKeyFile":None,"rpcUrl":None,"simulationFrom":None}), encoding="utf-8")
@@ -40,6 +40,27 @@ class ReleaseChecks(unittest.TestCase):
             root=Path(directory); self.prepare(root)
             (root / "trading-config.example.json").write_text('{"allowLive":true}',encoding="utf-8")
             self.assertTrue(any(i[2]=="unsafe-example-settings" for i in checker.scan(root)[1]))
+
+    def test_published_watchlist_accepts_valid_addresses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); self.prepare(root)
+            values=["0x1111111111111111111111111111111111111111", "0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD"]
+            (root / "config/targets.example.json").write_text(json.dumps(values), encoding="utf-8")
+            self.assertFalse(checker.scan(root)[1])
+
+    def test_invalid_published_watchlists_fail_without_returning_values(self):
+        invalid=[[], {}, "not-a-list", [123], ["not-an-address"],
+                 ["0x0000000000000000000000000000000000000000"],
+                 ["0xabcdefabcdefabcdefabcdefabcdefabcdefabcd", "0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD"],
+                 ["0x1111111111111111111111111111111111111111"] * 10_001]
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); self.prepare(root)
+            for values in invalid:
+                with self.subTest(kind=type(values).__name__, size=len(values) if hasattr(values, '__len__') else 0):
+                    (root / "config/targets.example.json").write_text(json.dumps(values), encoding="utf-8")
+                    issues=checker.scan(root)[1]
+                    self.assertTrue(any(i[2]=="invalid-published-watchlist" for i in issues))
+                    self.assertNotIn("0xabcdefabcdefabcdefabcdefabcdefabcdefabcd", repr(issues))
 
 if __name__ == "__main__":
     unittest.main()

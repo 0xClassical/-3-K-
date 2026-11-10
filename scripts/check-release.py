@@ -25,6 +25,20 @@ RULES = [
     ("credential-in-url", re.compile(r"https?://[^\s/:\"']+:[^\s/@\"']+@", re.I)),
 ]
 
+def valid_published_watchlist(targets):
+    if not isinstance(targets, list) or not targets or len(targets) > 10_000:
+        return False
+    normalized = []
+    for address in targets:
+        if not isinstance(address, str):
+            return False
+        address = address.strip().lower()
+        if not re.fullmatch(r"0x[0-9a-f]{40}", address) or int(address[2:], 16) == 0:
+            return False
+        normalized.append(address)
+    return len(set(normalized)) == len(normalized)
+
+
 def scan(root: Path):
     issues = []
     files = []
@@ -65,8 +79,8 @@ def scan(root: Path):
         if any(example.get(k) is not None for k in ("walletKeyFile", "rpcUrl", "simulationFrom")) or example.get("allowLive") is not False:
             issues.append(("trading-config.example.json", 0, "unsafe-example-settings"))
         targets = json.loads((root / "config/targets.example.json").read_text(encoding="utf-8-sig"))
-        if targets != []:
-            issues.append(("config/targets.example.json", 0, "nonempty-published-watchlist"))
+        if not valid_published_watchlist(targets):
+            issues.append(("config/targets.example.json", 0, "invalid-published-watchlist"))
     except (OSError, ValueError):
         issues.append(("configuration-examples", 0, "invalid-example"))
     return files, issues

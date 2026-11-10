@@ -9,7 +9,7 @@ $env:TRADING_CONFIG_FILE = Join-Path $taskRuntimeRoot 'trading-config.json'
 $env:SEED_BLOCKS = '0'
 $env:MEME_QUANT_LISTEN_ADDR = '127.0.0.1:8787'
 if (-not (Test-Path -LiteralPath $env:MEME_QUANT_TARGETS -PathType Leaf)) {
-    throw 'Copy config\targets.example.json to config\targets.local.json and enter your own monitored addresses first.'
+    throw 'Copy config\targets.example.json to config\targets.local.json first. The shared watchlist is ready to use; edits are optional.'
 }
 # Never enable/compile live trading or import a key from inherited environment.
 Remove-Item Env:WALLET_KEY_FILE -ErrorAction SilentlyContinue
